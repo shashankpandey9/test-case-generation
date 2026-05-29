@@ -1,6 +1,6 @@
 """
-LangGraph StateGraph — wires all 5 agents into a pipeline with a
-conditional retry loop after the reviewer.
+LangGraph StateGraph — wires all 6 agents into a pipeline with a
+conditional retry loop after the reviewer, plus pytest code generation.
 """
 
 from __future__ import annotations
@@ -21,6 +21,7 @@ from agents import (
     TestCaseGeneratorAgent,
     TestCaseReviewerAgent,
     OutputFormatterAgent,
+    TestCodeGeneratorAgent,
 )
 
 load_dotenv()
@@ -41,6 +42,7 @@ class AgentState(TypedDict, total=False):
     quality_score: float
     overall_feedback: str
     output: Dict[str, Any]
+    pytest_code: str
     trace_id: str
     error: Optional[str]
     retry_count: int
@@ -53,29 +55,22 @@ def build_graph(excel_path: str = DEFAULT_EXCEL_PATH) -> Any:
     llm = ChatOpenAI(model="gpt-4o", temperature=0.3)
 
     def node_data_ingestion(state: AgentState) -> AgentState:
-        protocol: A2AProtocol = state["protocol"]
-        agent = DataIngestionAgent(protocol=protocol, excel_path=excel_path)
-        return agent.run(state)
+        return DataIngestionAgent(protocol=state["protocol"], excel_path=excel_path).run(state)
 
     def node_requirement_analysis(state: AgentState) -> AgentState:
-        protocol: A2AProtocol = state["protocol"]
-        agent = RequirementAnalysisAgent(protocol=protocol, llm=llm)
-        return agent.run(state)
+        return RequirementAnalysisAgent(protocol=state["protocol"], llm=llm).run(state)
 
     def node_test_case_generator(state: AgentState) -> AgentState:
-        protocol: A2AProtocol = state["protocol"]
-        agent = TestCaseGeneratorAgent(protocol=protocol, llm=llm)
-        return agent.run(state)
+        return TestCaseGeneratorAgent(protocol=state["protocol"], llm=llm).run(state)
 
     def node_test_case_reviewer(state: AgentState) -> AgentState:
-        protocol: A2AProtocol = state["protocol"]
-        agent = TestCaseReviewerAgent(protocol=protocol, llm=llm)
-        return agent.run(state)
+        return TestCaseReviewerAgent(protocol=state["protocol"], llm=llm).run(state)
 
     def node_output_formatter(state: AgentState) -> AgentState:
-        protocol: A2AProtocol = state["protocol"]
-        agent = OutputFormatterAgent(protocol=protocol)
-        return agent.run(state)
+        return OutputFormatterAgent(protocol=state["protocol"]).run(state)
+
+    def node_test_code_generator(state: AgentState) -> AgentState:
+        return TestCodeGeneratorAgent(protocol=state["protocol"], llm=llm).run(state)
 
     def should_retry(state: AgentState) -> str:
         if state.get("error"):
@@ -94,6 +89,7 @@ def build_graph(excel_path: str = DEFAULT_EXCEL_PATH) -> Any:
     workflow.add_node("generate", node_test_case_generator)
     workflow.add_node("review", node_test_case_reviewer)
     workflow.add_node("format", node_output_formatter)
+    workflow.add_node("codegen", node_test_code_generator)
 
     workflow.set_entry_point("ingest")
     workflow.add_edge("ingest", "analyse")
@@ -104,7 +100,8 @@ def build_graph(excel_path: str = DEFAULT_EXCEL_PATH) -> Any:
         should_retry,
         {"regenerate": "generate", "format": "format"},
     )
-    workflow.add_edge("format", END)
+    workflow.add_edge("format", "codegen")
+    workflow.add_edge("codegen", END)
 
     return workflow.compile()
 
